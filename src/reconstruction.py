@@ -35,6 +35,11 @@ class Reconstruction:
         self.background = None
         self.save_folder = None
 
+        if self.wavelength==405:
+            self.F_indexmismatch = self.F_indexmismatch / self.coeff405
+        elif self.wavelength==637:
+            self.F_indexmismatch = self.F_indexmismatch / self.coeff637
+
     def create_save_folder(self, image_path):
         # Create the result folder one level up from the image path
         self.save_folder = os.path.join(os.path.dirname(os.path.dirname(image_path)), 'result')
@@ -44,7 +49,7 @@ class Reconstruction:
     def load_image(self, path):
         # Load image based on file extension
         if path.endswith('.fits'):
-            image = fits.getdata(path)
+            image = fits.getdata(path).T
         elif path.endswith('.tif') or path.endswith('.tiff'):
             image = imread(path)
         else:
@@ -96,15 +101,16 @@ class Reconstruction:
 
     def apply_affine_transform_3d(self):
         # Apply the affine transformation to the 3D image
-        inverse_matrix = cp.linalg.inv(self.transform_matrix)
-        output_shape = self.image.shape
+        inverse_matrix = cp.linalg.inv(self.transform_matrix.T)
+        output_shape = output_shape = [int(self.image.shape[i] * self.transform_matrix[i, i]) for i in range(3)] # Calculate size after affine transformation
+        print(output_shape)
 
         transformed_img = affine_transform(
             self.image, inverse_matrix[:3, :3], offset=-inverse_matrix[:3, 3], 
             order=1,  # Interpolation method (1 is for linear interpolation)
             mode='constant',  # Value outside the image
             cval=0,  # Value for constant mode
-            output_shape=output_shape
+            output_shape=tuple(output_shape)
         )
 
         return transformed_img
@@ -114,8 +120,7 @@ class Reconstruction:
         if calibration:
             self.pre_process_images()
  
-        output_shape = [int(self.image.shape[i] * self.transform_matrix[i, i]) for i in range(3)] # Calculate size after affine transformation
-        transformed_img = self.apply_affine_transform_3d(self.image, self.transform_matrix.T, tuple(output_shape))
+        transformed_img = self.apply_affine_transform_3d()
         return transformed_img
 
     def save_image(self, image, original_filename, save_tif=True):
