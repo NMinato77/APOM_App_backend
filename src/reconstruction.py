@@ -36,7 +36,6 @@ class Reconstruction:
         self.polarity = polarity    
         self.wavelength = wavelength
         self.image = None
-        self.transform_matrix = None
         self.profile = None
         self.background = None
         self.save_folder = save_folder
@@ -105,24 +104,29 @@ class Reconstruction:
                               [0, 0, 1, 0],
                               [0, 0, 0, 1]])
 
-        self.transform_matrix = cp.dot(cp.dot(M_zxscale, M_yxscale), M_yzshear)
+        return cp.dot(cp.dot(M_zxscale, M_yxscale), M_yzshear)
 
     def apply_affine_transform_3d(self):
         # Apply the affine transformation to the 3D image
-        inverse_matrix_offset = cp.linalg.inv(self.transform_matrix.T)
+        transform_matrix = self.get_3Dtransform_matrix()
+        inverse_matrix = cp.linalg.inv(transform_matrix.T)
+
+        output_shape = [self.image.shape[i] * transform_matrix[i, i] for i in range(3)] # Calculate size after affine transformation
+        output_shape[2] = output_shape[2] + output_shape[1] * np.tan(self.theta)
+        output_shape = tuple([int(np.ceil(dim)) for dim in output_shape])
 
         if self.polarity == 1:
             self.theta = -self.theta
-
-        inverse_matrix = cp.linalg.inv(self.transform_matrix.T)
-        output_shape = output_shape = [int(self.image.shape[i] * self.transform_matrix[i, i]) for i in range(3)] # Calculate size after affine transformation
+            transform_matrix = self.get_3Dtransform_matrix()
+            inverse_matrix = cp.linalg.inv(transform_matrix.T)
 
         transformed_img = affine_transform(
-            self.image, inverse_matrix[:3, :3], offset=-inverse_matrix_offset[:3, 3], 
+            self.image, inverse_matrix[:3, :3], 
+            offset=-inverse_matrix[:3, 3], 
             order=1,  # Interpolation method (1 is for linear interpolation)
             mode='constant',  # Value outside the image
             cval=0,  # Value for constant mode
-            output_shape=tuple(output_shape)
+            output_shape=output_shape
         )
 
         return transformed_img
@@ -179,9 +183,6 @@ def reconstruction(fps, v, wavelength=(405, 488, 637), image_path=None, profile_
     
     print('Loading images...')
     recon.load_images(image_path, profile_path, background_path)
-    
-    print('Calculating 3D transform matrix...')
-    recon.get_3Dtransform_matrix()
     
     print('Applying 3D affine transformation...')
     recon.image_3d_reconstraction(calibration=calibration)
