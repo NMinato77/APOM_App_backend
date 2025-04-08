@@ -62,7 +62,7 @@ class Reconstruction:
         else:
             raise ValueError('Unsupported file format')
                 
-        return cp.array(image).astype(cp.float32)
+        return image.astype(np.float32)
 
     def load_images(self, image_path, profile_path, background_path):
         # # Create the save folder
@@ -70,19 +70,19 @@ class Reconstruction:
         #     self.create_save_folder(image_path)
         
         # Load and flip the main image
-        self.image = cp.flip(self.load_image(image_path), axis=1)
+        self.image = self.load_image(image_path)
         # Load profile and background images
         self.profile = self.load_image(profile_path)
         self.background = self.load_image(background_path)
 
     def pre_process_images(self):
         # Pre-process images by normalizing with profile and subtracting background
-        processed_profile = self.profile / cp.mean(self.profile)
+        processed_profile = self.profile / np.mean(self.profile)
         for i in range(self.image.shape[2]):
             self.image[:, :, i] = (self.image[:, :, i] - self.background.T) / processed_profile.T
 
-            self.image = cp.clip(self.image, 0, None)
-            self.image = 65535 * (self.image - cp.min(self.image)) / (cp.max(self.image) - cp.min(self.image))
+        self.image = np.clip(self.image, 0, None)
+        self.image = 65535 * (self.image - np.min(self.image)) / (np.max(self.image) - np.min(self.image))
 
     def get_3Dtransform_matrix(self):
         # Calculate the 3D transformation matrix
@@ -106,28 +106,43 @@ class Reconstruction:
 
         return cp.dot(cp.dot(M_zxscale, M_yxscale), M_yzshear)
 
-    def apply_affine_transform_3d(self):
+    def apply_affine_transform_3d(self, chunk_size=64):
         # Apply the affine transformation to the 3D image
         transform_matrix = self.get_3Dtransform_matrix()
-        inverse_matrix = cp.linalg.inv(transform_matrix.T)
+        inverse_matrix = cp.linalg.inv(transform_matrix.T).astype(cp.float32)
 
         output_shape = [self.image.shape[i] * transform_matrix[i, i] for i in range(3)] # Calculate size after affine transformation
-        output_shape[2] = output_shape[2] + output_shape[1] * np.tan(self.theta)
+        increment = output_shape[1] * np.tan(self.theta)
+        output_shape[2] = output_shape[2] + increment
         output_shape = tuple([int(np.ceil(dim)) for dim in output_shape])
 
         if self.polarity == 1:
             self.theta = -self.theta
             transform_matrix = self.get_3Dtransform_matrix()
-            inverse_matrix = cp.linalg.inv(transform_matrix.T)
+            inverse_matrix = cp.linalg.inv(transform_matrix.T).astype(cp.float32)
+            inverse_matrix[2, 3] = -inverse_matrix[2, 2] * increment
 
-        transformed_img = affine_transform(
-            self.image, inverse_matrix[:3, :3], 
-            offset=-inverse_matrix[:3, 3], 
-            order=1,  # Interpolation method (1 is for linear interpolation)
-            mode='constant',  # Value outside the image
-            cval=0,  # Value for constant mode
-            output_shape=output_shape
-        )
+        transformed_chunks = []
+
+        for z_start in range(0, self.image.shape[0], chunk_size):
+            z_end = min(z_start + chunk_size, self.image.shape[0])
+
+            # Get the chunk of the image
+            chunk = cp.array(self.image[z_start:z_end])
+            chunk = cp.flip(chunk, axis=1)
+
+            temp_output = affine_transform(
+                chunk, 
+                inverse_matrix, 
+                order=1,  # Interpolation order
+                mode='constant',  # Value outside the image
+                cval=0,  # Value for constant mode
+                output_shape=(z_end - z_start, output_shape[1], output_shape[2]),
+                texture_memory = True,  # Use texture memory for faster processing
+            )
+            
+            transformed_chunks.append(cp.asnumpy(temp_output))
+            transformed_img = np.concatenate(transformed_chunks, axis=0)
 
         return transformed_img
     
@@ -141,7 +156,7 @@ class Reconstruction:
             return transformed_img  # Do nothing and return the original transformed image
 
         matrix = cp.eye(4)
-        matrix[:3, 3] = shift
+        matrix[:3, 3] = cp.array(shift)
         
         return affine_transform(transformed_img, matrix[:3, :3], offset=matrix[:3, 3])
         
@@ -153,9 +168,10 @@ class Reconstruction:
         transformed_img = self.apply_affine_transform_3d()
 
         if shift:
-            transformed_img = self.shift_image(transformed_img)
+            transformed_img = self.shift_image(cp.array(transformed_img))
+            transformed_img = cp.asnumpy(transformed_img)  # Convert to NumPy array for saving
 
-        self.result_image = transformed_img.get()  # Convert to NumPy array for saving
+        self.result_image = transformed_img
     
     def save_image(self, original_filename, save_tif=True):
         # Save the reconstructed image
