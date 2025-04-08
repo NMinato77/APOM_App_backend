@@ -159,6 +159,38 @@ class Reconstruction:
         matrix[:3, 3] = cp.array(shift)
         
         return affine_transform(transformed_img, matrix[:3, :3], offset=matrix[:3, 3])
+    
+    def shift_image_in_chunks(self, transformed_img, chunk_size=64):
+        # Apply shift to each chunk separately
+        if self.wavelength == 405:
+            shift = self.shift405
+        elif self.wavelength == 637:
+            shift = self.shift637
+        else:
+            return transformed_img  # No shift needed
+
+        matrix = cp.eye(4, dtype='f')
+        matrix[:3, 3] = cp.array(shift).astype('f')
+
+        shifted_chunks = []
+
+        for z_start in range(0, transformed_img.shape[0], chunk_size):
+            z_end = min(z_start + chunk_size, transformed_img.shape[0])
+
+            chunk = cp.array(transformed_img[z_start:z_end])
+
+            shifted_chunk = affine_transform(
+                chunk,
+                matrix,
+                order=1,
+                mode='constant',
+                cval=0,
+                output_shape=chunk.shape,
+                texture_memory=True,
+            )
+            shifted_chunks.append(cp.asnumpy(shifted_chunk))
+
+        return np.concatenate(shifted_chunks, axis=0)
         
     def image_3d_reconstraction(self, calibration=True, shift=True):
         # Perform 3D image reconstruction
@@ -168,8 +200,7 @@ class Reconstruction:
         transformed_img = self.apply_affine_transform_3d()
 
         if shift:
-            transformed_img = self.shift_image(cp.array(transformed_img))
-            transformed_img = cp.asnumpy(transformed_img)  # Convert to NumPy array for saving
+            transformed_img = self.shift_image_in_chunks(transformed_img)
 
         self.result_image = transformed_img
     
